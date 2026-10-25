@@ -1,0 +1,28 @@
+[package]
+name = "peersync-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Directory synchronization over authenticated Iroh connections"
+readme = "../../README.md"
+
+[[bin]]
+name = "peersync"
+path = "src/main.rs"
+
+[dependencies]
+peersync = { path = "../peersync", version = "0.1.0" }
+tokio = { workspace = true, features = ["signal"] }
+serde_json.workspace = true
+tracing.workspace = true
+iroh = { version = "=1.3.0", default-features = false, features = ["tls-ring"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

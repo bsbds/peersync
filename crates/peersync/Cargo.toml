@@ -1,0 +1,28 @@
+[package]
+name = "peersync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Rsync-style directory synchronization over asynchronous byte streams"
+readme = "../../README.md"
+
+[dependencies]
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+fast_rsync = "=0.2.0"
+blake3 = "1"
+ignore = "0.4"
+globset = "0.4"
+tempfile = "3"
+filetime = "0.2"
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true
