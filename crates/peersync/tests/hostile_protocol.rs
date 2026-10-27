@@ -29,7 +29,7 @@ async fn receiver(stream: DuplexStream, path: &Path) -> SyncResult {
     let (mut r, mut w) = tokio::io::split(stream);
     let syncer = Syncer::new();
     let mut ctx = SyncContext::new(CancellationToken::new());
-    syncer.receive(&mut r, &mut w, path, &mut ctx).await
+    syncer.receive(&mut r, &mut w, path, None, &mut ctx).await
 }
 
 #[tokio::test]
@@ -136,7 +136,9 @@ async fn concurrent_roles_on_same_syncer_fail_instead_of_deadlocking() {
                 r
             },
             async {
-                let r = engine.receive(&mut br, &mut bw, dir.path(), &mut rc).await;
+                let r = engine
+                    .receive(&mut br, &mut bw, dir.path(), None, &mut rc)
+                    .await;
                 drop(br);
                 drop(bw);
                 r

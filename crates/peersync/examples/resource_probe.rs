@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let (a, b) = tokio::join!(
         sender.send(&mut ar, &mut aw, source.path(), &options, &mut sc),
-        receiver.receive(&mut br, &mut bw, target.path(), &mut rc)
+        receiver.receive(&mut br, &mut bw, target.path(), None, &mut rc)
     );
     let a = a?;
     b?;

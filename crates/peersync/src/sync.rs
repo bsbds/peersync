@@ -96,6 +96,8 @@ impl Syncer {
     /// Receive into the locally selected directory. The caller must authorize
     /// the peer and operation before invoking this method; there is no extra
     /// deletion-permission layer. Missing destination roots may be created.
+    /// Pass approved options to reject a different Hello before filesystem
+    /// changes. `None` allows the authorized sender to choose all options.
     ///
     /// # Errors
     /// Errors include a partial report, not a rollback guarantee.
@@ -106,6 +108,7 @@ impl Syncer {
         reader: &mut R,
         writer: &mut W,
         destination: &Path,
+        expected_options: Option<&SyncOptions>,
         context: &mut SyncContext<'_>,
     ) -> SyncResult
     where
@@ -131,8 +134,14 @@ impl Syncer {
                 .map_err(|_| SyncError::LimitExceeded {
                     resource: Resource::BufferMemory,
                 })?;
-            self.receive_inner(&mut wire, destination, context, &mut report)
-                .await
+            self.receive_inner(
+                &mut wire,
+                destination,
+                expected_options,
+                context,
+                &mut report,
+            )
+            .await
         }
         .await;
         self.finish(result, &mut wire, report, start, context).await
@@ -432,6 +441,7 @@ impl Syncer {
         &self,
         wire: &mut Wire<'_, R, W>,
         destination: &Path,
+        expected_options: Option<&SyncOptions>,
         context: &mut SyncContext<'_>,
         report: &mut SyncReport,
     ) -> Result<(), SyncError> {
@@ -455,6 +465,9 @@ impl Syncer {
             return Err(SyncError::IncompatibleDeltaFormat);
         }
         Filter::new(&options.filter, &[])?;
+        if expected_options.is_some_and(|expected| expected != &options) {
+            return Err(SyncError::OptionsMismatch);
+        }
         #[cfg(not(unix))]
         if options.preserve_permissions || options.symlinks == SymlinkMode::Preserve {
             return Err(invalid("requested metadata unsupported on this platform"));

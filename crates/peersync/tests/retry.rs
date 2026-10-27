@@ -105,7 +105,7 @@ async fn exercise(always: bool) {
             },
             async {
                 let r = receiver
-                    .receive(&mut br, &mut bw, dst.path(), &mut rc)
+                    .receive(&mut br, &mut bw, dst.path(), None, &mut rc)
                     .await;
                 drop(br);
                 drop(bw);

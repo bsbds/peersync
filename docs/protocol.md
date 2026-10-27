@@ -38,6 +38,12 @@ nonempty payload and unexpected message/state transitions are errors.
    confirmed completion from unknown effects. Finite handshakes cannot eliminate
    all lost-ack uncertainty. EOF is not a substitute for successful completion.
 
+The receiver never
+accepts a different option set when the host passes `expected_options` to
+`Syncer::receive`: the Hello must match before any destination mutation. Passing
+`None` explicitly permits the authenticated sender to choose options. This is a
+Rust API change; the wire format remains unchanged.
+
 Cancellation or framing failure invalidates this operation's streams. Core never
 closes a host's shared connection. The CLI owns its one-shot connection. After
 reading `Finish`, only the receiver finishes its send stream, waits for transport

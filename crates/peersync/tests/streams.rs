@@ -18,7 +18,7 @@ async fn sync(src: &Path, dst: &Path, options: SyncOptions) -> (SyncResult, Sync
                 r
             },
             async {
-                let r = receiver.receive(&mut br, &mut bw, dst, &mut rc).await;
+                let r = receiver.receive(&mut br, &mut bw, dst, None, &mut rc).await;
                 drop(br);
                 drop(bw);
                 r

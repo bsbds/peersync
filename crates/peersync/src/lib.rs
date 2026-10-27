@@ -21,7 +21,7 @@
 //! options.preserve_mtime = true;
 //! let (sent, received) = tokio::join!(
 //!     sender.send(&mut ar, &mut aw, Path::new("source"), &options, &mut send_context),
-//!     receiver.receive(&mut br, &mut bw, Path::new("destination"), &mut receive_context),
+//!     receiver.receive(&mut br, &mut bw, Path::new("destination"), Some(&options), &mut receive_context),
 //! );
 //! sent?;
 //! received?;

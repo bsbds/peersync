@@ -24,7 +24,7 @@ async fn files_larger_than_memory_budget_stream_in_chunks() {
     let (a, b) = tokio::time::timeout(Duration::from_secs(15), async {
         tokio::join!(
             sender.send(&mut ar, &mut aw, src.path(), &options, &mut sc),
-            receiver.receive(&mut br, &mut bw, dst.path(), &mut rc)
+            receiver.receive(&mut br, &mut bw, dst.path(), None, &mut rc)
         )
     })
     .await

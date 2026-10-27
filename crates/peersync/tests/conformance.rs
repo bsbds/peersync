@@ -141,7 +141,7 @@ async fn recursive_subset_matches_pinned_rsync() {
             let (a, b) = tokio::time::timeout(Duration::from_secs(10), async {
                 tokio::join!(
                     sender.send(&mut ar, &mut aw, source.path(), &options, &mut sc),
-                    receiver.receive(&mut br, &mut bw, actual.path(), &mut rc)
+                    receiver.receive(&mut br, &mut bw, actual.path(), None, &mut rc)
                 )
             })
             .await
@@ -206,7 +206,7 @@ async fn deletion_error_timing_and_directory_to_file_conversion() {
                 },
                 async {
                     let r = receiver
-                        .receive(&mut br, &mut bw, actual.path(), &mut rc)
+                        .receive(&mut br, &mut bw, actual.path(), None, &mut rc)
                         .await;
                     drop(br);
                     drop(bw);

@@ -308,7 +308,7 @@ async fn run(cli: Cli, matches: &clap::ArgMatches, cancel: CancellationToken) ->
         }=>stream? };
         let result=match &cli.command {
             Command::Send {source,options,..}=>syncer.send(&mut rx,&mut tx,source,&options.library(matches.subcommand_matches("send").unwrap()),&mut context).await,
-            Command::Receive {destination,..}=>syncer.receive(&mut rx,&mut tx,destination,&mut context).await,
+            Command::Receive {destination,..}=>syncer.receive(&mut rx,&mut tx,destination,None,&mut context).await,
             _=>unreachable!(),
         };
         match result {

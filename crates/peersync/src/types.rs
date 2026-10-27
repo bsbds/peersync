@@ -3,7 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 /// Options proposed by the sender. Defaults resemble recursive rsync, not `-a`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct SyncOptions {
@@ -109,6 +109,8 @@ pub enum SyncError {
     IncompatibleProtocol,
     #[error("incompatible delta format")]
     IncompatibleDeltaFormat,
+    #[error("sender options do not match the approved operation")]
+    OptionsMismatch,
     #[error("peer rejected operation: {reason}")]
     Rejected { reason: String },
     #[error("protocol error: {message}")]
