@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
 
-/// Options proposed by the sender. Defaults resemble recursive rsync, not `-a`.
+/// Options proposed by the sender. Filtering defaults follow ripgrep;
+/// transfer and metadata options remain a limited recursive sync profile.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -14,7 +15,7 @@ pub struct SyncOptions {
     pub preserve_mtime: bool,
     pub preserve_permissions: bool,
     pub symlinks: SymlinkMode,
-    pub filter: FilterMode,
+    pub filter: FilterOptions,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,20 +40,18 @@ pub enum SymlinkMode {
     Preserve,
 }
 
-/// Mutually exclusive filter sources; no invented cross-source precedence.
+/// Ripgrep-style filtering. Explicit globs override ignore files, with the
+/// last matching glob winning. Defaults hide hidden entries and load ignore
+/// sources from the source host, including parent and Git configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 #[non_exhaustive]
-pub enum FilterMode {
-    #[default]
-    None,
-    Glob(Vec<FilterRule>),
-    GitIgnore,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum FilterRule {
-    Include(String),
-    Exclude(String),
+pub struct FilterOptions {
+    pub globs: Vec<String>,
+    /// Like `rg --hidden`: ignore files can still exclude hidden entries.
+    pub hidden: bool,
+    /// Like `rg --no-ignore`: explicit globs and hidden filtering still apply.
+    pub no_ignore: bool,
 }
 
 /// Conservative initial budgets, not performance claims. One task at a time per

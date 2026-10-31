@@ -19,7 +19,7 @@ async fn receive(stream: &mut DuplexStream) -> Value {
 async fn hello(stream: &mut DuplexStream) {
     let mut options = SyncOptions::default();
     options.transfer = TransferMode::WholeFile;
-    control(stream,json!({"type":"Hello","version":1,"signature":"librsync-md4","delta":"librsync-delta","format_version":1,"options":options})).await;
+    control(stream,json!({"type":"Hello","version":2,"signature":"librsync-md4","delta":"librsync-delta","format_version":1,"options":options})).await;
     assert_eq!(receive(stream).await["type"], "Ready");
 }
 fn entry(path: Vec<Vec<u8>>, kind: &str, len: u64) -> Value {
@@ -30,6 +30,78 @@ async fn receiver(stream: DuplexStream, path: &Path) -> SyncResult {
     let syncer = Syncer::new();
     let mut ctx = SyncContext::new(CancellationToken::new());
     syncer.receive(&mut r, &mut w, path, None, &mut ctx).await
+}
+
+#[tokio::test]
+async fn old_version_or_filter_shape_fails_before_destination_creation() {
+    for old_version in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("absent");
+        let mut options = serde_json::to_value(SyncOptions::default()).unwrap();
+        if !old_version {
+            options["filter"] = json!("None");
+        }
+        let (mut peer, local) = tokio::io::duplex(4096);
+        let ((), result) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(async {
+                control(&mut peer,json!({"type":"Hello","version":if old_version {1} else {2},
+                    "signature":"librsync-md4","delta":"librsync-delta","format_version":1,"options":options})).await;
+            }, receiver(local,&target))
+        }).await.unwrap();
+        assert!(result.is_err());
+        assert!(!target.exists());
+    }
+}
+
+#[tokio::test]
+async fn invalid_or_cancelled_filter_decisions_do_not_delete() {
+    for cancelled in [false, true] {
+        let target = tempfile::tempdir().unwrap();
+        std::fs::write(target.path().join("extra"), b"safe").unwrap();
+        let mut options = SyncOptions::default();
+        options.delete = true;
+        let cancellation = CancellationToken::new();
+        let (mut peer, local) = tokio::io::duplex(4096);
+        let (mut read, mut write) = tokio::io::split(local);
+        let syncer = Syncer::new();
+        let mut context = SyncContext::new(cancellation.clone());
+        let ((), result) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(async {
+                control(&mut peer,json!({"type":"Hello","version":2,"signature":"librsync-md4","delta":"librsync-delta","format_version":1,"options":options})).await;
+                assert_eq!(receive(&mut peer).await["type"],"Ready");
+                control(&mut peer,entry(vec![],"Directory",0)).await;
+                control(&mut peer,json!({"type":"ManifestEnd"})).await;
+                assert_eq!(receive(&mut peer).await["type"],"FilterQuery");
+                if cancelled { cancellation.cancel(); }
+                else { control(&mut peer,json!({"type":"FilterResult","included":[]})).await; }
+            }, syncer.receive(&mut read,&mut write,target.path(),Some(&options),&mut context))
+        }).await.unwrap();
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(target.path().join("extra")).unwrap(), b"safe");
+    }
+}
+
+#[tokio::test]
+async fn source_rejects_deletion_candidate_traversal() {
+    let source = tempfile::tempdir().unwrap();
+    let mut options = SyncOptions::default();
+    options.delete = true;
+    let (mut peer, local) = tokio::io::duplex(4096);
+    let (mut read, mut write) = tokio::io::split(local);
+    let syncer = Syncer::new();
+    let mut context = SyncContext::new(CancellationToken::new());
+    let ((), result) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(async {
+            assert_eq!(receive(&mut peer).await["type"],"Hello");
+            control(&mut peer,json!({"type":"Ready"})).await;
+            while receive(&mut peer).await["type"] != "ManifestEnd" {}
+            control(&mut peer,json!({"type":"FilterQuery","candidates":[{"path":[[46,46],[120]],"is_dir":false}]})).await;
+        }, syncer.send(&mut read,&mut write,source.path(),&options,&mut context))
+    }).await.unwrap();
+    assert!(matches!(
+        result.unwrap_err().error,
+        SyncError::Protocol { .. }
+    ));
 }
 
 #[tokio::test]

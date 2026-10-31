@@ -123,6 +123,9 @@ async fn recursive_subset_matches_pinned_rsync() {
                 String::from_utf8_lossy(&result.stderr)
             );
             let mut options = SyncOptions::default();
+            // This oracle covers transfer semantics, not ripgrep filtering.
+            options.filter.hidden = true;
+            options.filter.no_ignore = true;
             options.delete = delete;
             options.preserve_mtime = preserve;
             options.preserve_permissions = preserve;
@@ -191,6 +194,8 @@ async fn deletion_error_timing_and_directory_to_file_conversion() {
         let sender = Syncer::new();
         let receiver = Syncer::new();
         let mut options = SyncOptions::default();
+        options.filter.hidden = true;
+        options.filter.no_ignore = true;
         options.delete = true;
         let mut sc = SyncContext::new(CancellationToken::new());
         let mut rc = SyncContext::new(CancellationToken::new());

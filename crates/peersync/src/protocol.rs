@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
-pub(crate) const VERSION: u16 = 1;
+pub(crate) const VERSION: u16 = 2;
 const CONTROL: u8 = 1;
 const DATA: u8 = 2;
 
@@ -19,7 +19,12 @@ pub(crate) enum Message {
     },
     Ready,
     Entry(crate::fs::Entry),
-    IgnoreFile(crate::filter::IgnoreFile),
+    FilterQuery {
+        candidates: Vec<crate::filter::Candidate>,
+    },
+    FilterResult {
+        included: Vec<bool>,
+    },
     ScanIssue {
         path: Option<crate::fs::WirePath>,
         message: String,

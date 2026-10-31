@@ -1,5 +1,26 @@
 # Initial Linux validation record
 
+## Ripgrep filtering migration (local validation)
+
+- Rust 1.95.0 / ignore 0.4.33; oracle ripgrep 15.2.0.
+- Workspace: 38 tests plus 1 compiled doctest pass; three external-oracle tests
+  are ignored by default. Strict workspace Clippy and formatting pass.
+- `PEERSYNC_RG=/path/to/rg cargo test -p peersync-cli --test processes
+  filter_selection_matches_pinned_ripgrep --locked -- --ignored` passes all six
+  option combinations with actual CLI peers and isolated source Git/HOME config.
+- Both pinned rsync 3.4.1 conformance tests pass with filtering explicitly disabled;
+  they continue checking transfer behavior, not the new filtering contract.
+- Added source-rule deletion protection independent of target rules, positive
+  globs/last-match behavior, protected directory replacement, malformed/cancelled
+  filter replies, traversal rejection and old-version/filter-shape rejection.
+- Both send/receive futures have a compile-time `Send` check; deep candidate
+  ancestor-cache expansion has an explicit estimated-budget regression test.
+- Source-side candidate evaluation avoids transmitting private ignore contents.
+  Candidate paths/types are sent to the source when delete is enabled.
+- The checks above were rerun before local integration into `main`; no push was
+  made. The following sections retain historical evidence for earlier
+  implementation stages, not current publication status or filtering defaults.
+
 This is evidence for the initial implementation, not production certification or
 full rsync compatibility. No Naco code, Cargo configuration or dependencies were
 changed. No remote repository was created, no commit pushed, no crate published.
@@ -28,7 +49,7 @@ old file after two failures; small-capacity duplex framing/backpressure; cancell
 path traversal rejection before root creation; oversized frame rejection; partial
 stream temporary-file cleanup; same-instance concurrency failing without deadlock;
 quick-check/checksum, hidden files, empty directories, opt-in delete, dry-run,
-ordered glob protection, nested GitIgnore without a repository, non-UTF8 Unix names,
+glob override protection, nested GitIgnore in a repository, non-UTF8 Unix names,
 target directory symlink replacement and dry-run safety. Two actual CLI processes
 sync over local Iroh, reject an unauthorized identity, and refuse key overwrites.
 

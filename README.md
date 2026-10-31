@@ -134,11 +134,16 @@ Sender options:
 | `--delete` | Remove unprotected extra target entries, reference ordinary rsync 3.4.1 `--delete` |
 | `--dry-run` | Plan without modifying/creating the destination |
 | `--times`, `--perms`, `--links` | Preserve supported mtimes, Unix modes, or symlinks |
-| `--include PATTERN`, `--exclude PATTERN` | Ordered globset rules; first match wins |
-| `--gitignore` | Root-local/nested `.gitignore` only; conflicts with explicit rules |
+| `-g PATTERN`, `--glob PATTERN` | Ripgrep overrides; `!` excludes, last match wins |
+| `--hidden` | Allow hidden entries (ignore rules still apply) |
+| `--no-ignore` | Disable ignore files (globs/hidden filtering still apply) |
 
-Defaults do not read ignore files, skip hidden files, exclude `.git/`, follow source
-symlinks, preserve mtimes/modes, or delete extra target entries. Source symlinks and
+Defaults follow ripgrep filtering: hidden entries are skipped and source-side
+ignore files are read, including parent and Git configuration sources. Explicit
+globs override those rules. This is a breaking change from the old mutually
+exclusive filter modes; use `--hidden --no-ignore` for unfiltered traversal.
+Defaults do not follow source symlinks, preserve mtimes/modes, or delete extra
+target entries. Source symlinks and
 special files not selected for copying are skipped and retain their manifest names
 so a same-name target is not accidentally removed by `--delete`.
 

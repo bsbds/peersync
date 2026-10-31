@@ -4,6 +4,8 @@ Reference: rsync **3.4.1**. We implement a selected behavior subset, not its wir
 protocol, exact itemized output, option grammar, delta byte-for-byte decisions, or
 exit codes. Tests compare actual trees, bytes, supported modes/times and error
 effects. No full compatibility claim is made.
+Filtering instead follows **ripgrep 15.2.0**, using **ignore 0.4.33**. Rsync oracle
+tests disable filtering explicitly and do not define the filter contract.
 
 ## Copy and metadata
 
@@ -28,24 +30,44 @@ effects. No full compatibility claim is made.
 
 ## Filters
 
-`FilterMode::{None, Glob(rules), GitIgnore}` are mutually exclusive; the CLI
-rejects combining `.gitignore` and explicit rules before opening a connection.
+`FilterOptions { globs, hidden, no_ignore }` replaces the old filter enum.
+All fields default to empty/false. Defaults load `.gitignore`, `.ignore`,
+`.rgignore`, parent rules, Git global excludes and `.git/info/exclude`, subject
+to ignore's Git repository boundaries. Git-ignore rules require a repository;
+ordinary `.ignore` / `.rgignore` do not. Source HOME, XDG/Git configuration and
+parent directories can therefore affect selection. Ripgrep CLI configuration
+files are not loaded.
 
-Glob mode uses globset with literal separators, case sensitivity, and backslash
-escaping. Patterns containing `/` match root-relative paths; otherwise they match
-basenames. First matching rule wins, unmatched means included. Excluded directories
-are pruned. Include does not force transmission of unchanged content. These are
-declared matching rules, **not full rsync filter syntax**.
+Explicit globs use `OverrideBuilder`, alongside ignore files: `*.rs` includes,
+`!*.tmp` excludes, and the last matching override wins. Overrides take precedence
+over ignore rules, including hidden filtering. Positive globs produce a file
+whitelist; includes do not force retransmission of unchanged files. Excluded
+directories are pruned: a child glob does not automatically restore an ignored
+parent. Directory traversal remains governed by ignore's directory decisions;
+visitable directories, including empty directories, are retained even with a
+file whitelist. This last rule is a directory-sync extension, not `rg --files`
+output behavior.
 
-GitIgnore loads only root-local and nested `.gitignore` without requiring a Git
-repository. It uses ignore's matching, negation and pruning behavior. No global,
-parent, `.ignore` or `.git/info/exclude` rules are loaded. Hidden attributes do not
-automatically exclude a file. Source-side rule text is transmitted for deletion
-protection, rather than trusting a possibly different target `.gitignore`.
-At most 1024 explicit rules or .gitignore files and 64 KiB aggregate pattern text
-are supported; explicit patterns are at most 4096 bytes. Invalid/excessive rules
-fail explicitly. Files excluded by source GitIgnore parents are not searched for
-deeper rules.
+`hidden=true` corresponds to `--hidden`; it does not disable ignore files.
+`no_ignore=true` corresponds to `--no-ignore`; explicit globs and hidden filtering
+still apply. Setting both true disables default ignore/hidden filtering.
+At most 1024 explicit globs, 4096 bytes per glob and 64 KiB aggregate glob text
+are accepted. Invalid globs fail. Native ignore-file loading/compilation is
+performed by ignore, not by a memory-sandboxed parser.
+
+Deletion candidates are evaluated by the source's cached `IncrementalIgnore`,
+not the receiver's configuration. Bounded path/type batches travel to the source;
+rule/configuration contents are not copied. Thus the sender learns destination
+candidate names when deletion is enabled. Ignored directories are protected
+without enumerating their descendants. Unknown paths and entries whose
+file/directory classification changed are protected, and a failed/malformed
+response is never deletion consent. Ancestors
+that are source symlinks are not traversed to load rules. External concurrent
+filesystem replacement is still outside the security guarantee.
+
+The source matcher caches rules at directory granularity. This is not an atomic
+filesystem/rule snapshot; avoid concurrent edits during synchronization. Reported
+ignore-loading errors abort rather than authorizing deletion with partial rules.
 
 ## Deletion and failures
 
@@ -86,7 +108,7 @@ Files and bases within the configured delta
 threshold (working budget / 16) may use deltas. Otherwise a full-file stream is
 selected *before transfer*, with chunked hashing into a destination temporary file.
 This preserves large-file support without claiming streaming delta computation.
-Manifest/error retention and filter compilation remain bounded in-memory work.
+Manifest/error retention, deletion candidate batches and explicit-glob input are bounded.
 Local source ignore traversal uses the upstream ignore implementation, not an
 OS-enforced memory sandbox. Disk capacity/file counts still require host policy.
 

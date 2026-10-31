@@ -195,7 +195,7 @@ impl Syncer {
         report: &mut SyncReport,
     ) -> Result<(), SyncError> {
         context.emit(SyncEvent::PhaseChanged(Phase::Handshake));
-        Filter::new(&options.filter, &[])?;
+        crate::filter::ripgrep::validate(&options.filter)?;
         let format = self.engine.format();
         wire.send(&Message::Hello {
             version: VERSION,
@@ -221,9 +221,9 @@ impl Syncer {
         context.emit(SyncEvent::Scanned {
             entries: report.scanned_entries,
         });
-        for ignore in manifest.ignores {
-            wire.send(&Message::IgnoreFile(ignore)).await?;
-        }
+        let mut source_filter = manifest.filter;
+        let mut filter_candidates = 0usize;
+        let mut filter_bytes = 0usize;
         for entry in &manifest.entries {
             wire.send(&Message::Entry(entry.clone())).await?;
         }
@@ -245,6 +245,38 @@ impl Syncer {
         let mut requests: HashMap<usize, u8> = HashMap::new();
         loop {
             match wire.receive().await? {
+                Message::FilterQuery { candidates } if options.delete => {
+                    filter_candidates = filter_candidates.saturating_add(candidates.len());
+                    filter_bytes = filter_bytes.saturating_add(
+                        serde_json::to_vec(&candidates)
+                            .map_err(|e| invalid(e.to_string()))?
+                            .len()
+                            + candidates.len() * 512,
+                    );
+                    if candidates.is_empty()
+                        || candidates.len() > 256
+                        || filter_candidates > self.limits.max_entries
+                        || filter_bytes > self.limits.max_buffer_bytes / 8
+                    {
+                        return Err(invalid("filter candidate limit exceeded"));
+                    }
+                    let cancel = context.cancel.clone();
+                    let (updated, included) = blocking(move || {
+                        let mut included = Vec::with_capacity(candidates.len());
+                        for candidate in candidates {
+                            fs::check_cancel(&cancel)?;
+                            let path = candidate.path.path()?;
+                            if path.as_os_str().is_empty() {
+                                return Err(invalid("empty deletion candidate"));
+                            }
+                            included.push(source_filter.included(&path, candidate.is_dir)?);
+                        }
+                        Ok((source_filter, included))
+                    })
+                    .await?;
+                    source_filter = updated;
+                    wire.send(&Message::FilterResult { included }).await?;
+                }
                 Message::Request {
                     index,
                     hash_bytes,
@@ -464,7 +496,7 @@ impl Syncer {
         {
             return Err(SyncError::IncompatibleDeltaFormat);
         }
-        Filter::new(&options.filter, &[])?;
+        crate::filter::ripgrep::validate(&options.filter)?;
         if expected_options.is_some_and(|expected| expected != &options) {
             return Err(SyncError::OptionsMismatch);
         }
@@ -475,7 +507,6 @@ impl Syncer {
         report.dry_run = options.dry_run;
         wire.send(&Message::Ready).await?;
         let mut entries = Vec::new();
-        let mut ignores = Vec::new();
         let mut manifest_bytes = 0;
         let mut pending_scan_errors = HashMap::new();
         loop {
@@ -485,7 +516,7 @@ impl Syncer {
                 .len()
                 + 512;
             if manifest_bytes > self.limits.max_buffer_bytes / 8
-                || entries.len() + ignores.len() > self.limits.max_entries
+                || entries.len() > self.limits.max_entries
             {
                 return Err(SyncError::LimitExceeded {
                     resource: Resource::Entries,
@@ -494,10 +525,6 @@ impl Syncer {
             match message {
                 Message::Entry(e) => {
                     entries.push(e);
-                }
-                Message::IgnoreFile(f) if matches!(options.filter, FilterMode::GitIgnore) => {
-                    f.directory.path()?;
-                    ignores.push(f);
                 }
                 Message::ScanIssue { path, message } => {
                     pending_scan_errors.insert(
@@ -519,7 +546,6 @@ impl Syncer {
                 return Err(invalid("scan error names an unlisted directory"));
             }
         }
-        let filter = Arc::new(Filter::new(&options.filter, &ignores)?);
         let root = fs::absolute(destination)?;
         report.scanned_entries = entries.len() as u64;
         context.emit(SyncEvent::Scanned {
@@ -589,10 +615,8 @@ impl Syncer {
                 // Ordinary --delete allows making way for a file/link by
                 // removing an old directory's contents; filters still protect
                 // excluded descendants and prevent removing a nonempty parent.
-                self.delete_directory(
-                    wire, &root, &relative, &expected, &filter, &options, context, report,
-                )
-                .await?;
+                self.delete_directory(wire, &root, &relative, &expected, &options, context, report)
+                    .await?;
             }
             let action = match entry.kind {
                 Kind::Directory => ItemAction::CreateDirectory,
@@ -673,7 +697,7 @@ impl Syncer {
                         && !(options.dry_run && target_is_dir == Some(false))
                     {
                         self.delete_directory(
-                            wire, &root, &relative, &expected, &filter, &options, context, report,
+                            wire, &root, &relative, &expected, &options, context, report,
                         )
                         .await?;
                     }
@@ -1012,11 +1036,10 @@ impl Syncer {
     #[allow(clippy::too_many_arguments)]
     async fn delete_directory<R: AsyncRead + Unpin + Send, W: AsyncWrite + Unpin + Send>(
         &self,
-        _wire: &mut Wire<'_, R, W>,
+        wire: &mut Wire<'_, R, W>,
         root: &Path,
         relative: &Path,
         expected: &Arc<HashSet<PathBuf>>,
-        filter: &Arc<Filter>,
         options: &SyncOptions,
         context: &mut SyncContext<'_>,
         report: &mut SyncReport,
@@ -1025,10 +1048,12 @@ impl Syncer {
             return Ok(());
         }
         context.emit(SyncEvent::PhaseChanged(Phase::Delete));
+        let filter = self
+            .plan_deletions(wire, root, relative, expected, context)
+            .await?;
         let root = root.to_owned();
         let relative = relative.to_owned();
         let expected = expected.clone();
-        let filter = filter.clone();
         let dry = options.dry_run;
         let cancel = context.cancel.clone();
         let max = self.limits.max_entries;
@@ -1062,6 +1087,125 @@ impl Syncer {
         }
         context.emit(SyncEvent::PhaseChanged(Phase::Transfer));
         Ok(())
+    }
+
+    /// Ask the source's matcher about bounded batches before removing anything
+    /// in this directory. Excluded directories are never descended into, and
+    /// a failed query cannot be interpreted as permission to delete.
+    async fn plan_deletions<R: AsyncRead + Unpin + Send, W: AsyncWrite + Unpin + Send>(
+        &self,
+        wire: &mut Wire<'_, R, W>,
+        root: &Path,
+        relative: &Path,
+        expected: &Arc<HashSet<PathBuf>>,
+        context: &mut SyncContext<'_>,
+    ) -> Result<Filter, SyncError> {
+        let mut directories = vec![relative.to_owned()];
+        let mut filter = Filter::default();
+        let mut count = 0usize;
+        let mut bytes = 0usize;
+        while let Some(directory) = directories.pop() {
+            fs::check_cancel(&context.cancel)?;
+            let root = root.to_owned();
+            let expected = expected.clone();
+            let limits = self.limits.clone();
+            let cancel = context.cancel.clone();
+            let candidates = blocking(move || {
+                let path = fs::target(&root, &directory)?;
+                let children = match std::fs::read_dir(path) {
+                    Ok(children) => children,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(Vec::new());
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                let mut result = Vec::new();
+                let mut retained = 0usize;
+                for child in children {
+                    fs::check_cancel(&cancel)?;
+                    let child = child?;
+                    let relative = directory.join(child.file_name());
+                    if expected.contains(&relative) {
+                        continue;
+                    }
+                    let candidate = crate::filter::Candidate {
+                        path: WirePath::from_path(&relative)?,
+                        is_dir: child.file_type()?.is_dir(),
+                    };
+                    candidate.path.path()?;
+                    retained = retained.saturating_add(
+                        serde_json::to_vec(&candidate)
+                            .map_err(|e| invalid(e.to_string()))?
+                            .len()
+                            + 512,
+                    );
+                    if result.len() >= limits.max_entries || retained > limits.max_buffer_bytes / 8
+                    {
+                        return Err(SyncError::LimitExceeded {
+                            resource: Resource::Entries,
+                        });
+                    }
+                    result.push(candidate);
+                }
+                Ok(result)
+            })
+            .await?;
+            let mut pending = candidates.into_iter().peekable();
+            while pending.peek().is_some() {
+                let mut batch = Vec::new();
+                let mut batch_bytes = 64usize;
+                while let Some(candidate) = pending.peek() {
+                    let size = serde_json::to_vec(candidate)
+                        .map_err(|e| invalid(e.to_string()))?
+                        .len()
+                        + 1;
+                    if size + 64 > self.limits.max_control_frame_bytes {
+                        return Err(SyncError::LimitExceeded {
+                            resource: Resource::ControlFrame,
+                        });
+                    }
+                    if batch.len() == 256
+                        || batch_bytes + size > self.limits.max_control_frame_bytes
+                    {
+                        break;
+                    }
+                    batch_bytes += size;
+                    batch.push(pending.next().expect("peeked candidate"));
+                }
+                count = count.saturating_add(batch.len());
+                bytes = bytes.saturating_add(batch_bytes + batch.len() * 512);
+                if count > self.limits.max_entries || bytes > self.limits.max_buffer_bytes / 8 {
+                    return Err(SyncError::LimitExceeded {
+                        resource: Resource::Entries,
+                    });
+                }
+                let message = Message::FilterQuery { candidates: batch };
+                wire.send(&message).await?;
+                let included = match wire.receive().await? {
+                    Message::FilterResult { included } => included,
+                    Message::Failed { message } => {
+                        return Err(SyncError::Rejected { reason: message });
+                    }
+                    _ => return Err(invalid("expected filter decisions")),
+                };
+                let Message::FilterQuery { candidates } = message else {
+                    unreachable!()
+                };
+                if included.len() != candidates.len() {
+                    return Err(invalid("filter decision count mismatch"));
+                }
+                for (candidate, included) in candidates.into_iter().zip(included) {
+                    if included {
+                        let path = candidate.path.path()?;
+                        if candidate.is_dir {
+                            directories.push(path.clone());
+                        }
+                        filter.allow(path, candidate.is_dir);
+                    }
+                }
+            }
+        }
+        Ok(filter)
     }
 
     fn issue(&self, report: &mut SyncReport, context: &mut SyncContext<'_>, issue: SyncIssue) {

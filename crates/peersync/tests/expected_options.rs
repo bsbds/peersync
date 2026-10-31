@@ -1,6 +1,6 @@
 use peersync::{
-    CancellationToken, Comparison, FilterMode, FilterRule, SymlinkMode, SyncContext, SyncError,
-    SyncOptions, Syncer, TransferMode,
+    CancellationToken, Comparison, SymlinkMode, SyncContext, SyncError, SyncOptions, Syncer,
+    TransferMode,
 };
 
 async fn run(sent: SyncOptions, expected: SyncOptions, success: bool) {
@@ -42,7 +42,7 @@ async fn approved_options_work_and_every_field_is_checked_before_mutation() {
     let defaults = SyncOptions::default();
     run(defaults.clone(), defaults.clone(), true).await;
     let mut cases = Vec::new();
-    for field in 0..8 {
+    for field in 0..10 {
         let mut changed = defaults.clone();
         match field {
             0 => changed.delete = true,
@@ -52,7 +52,9 @@ async fn approved_options_work_and_every_field_is_checked_before_mutation() {
             4 => changed.preserve_mtime = true,
             5 => changed.preserve_permissions = true,
             6 => changed.symlinks = SymlinkMode::Preserve,
-            _ => changed.filter = FilterMode::GitIgnore,
+            7 => changed.filter.hidden = true,
+            8 => changed.filter.no_ignore = true,
+            _ => changed.filter.globs = vec!["*.rs".into()],
         }
         cases.push(changed);
     }
@@ -61,13 +63,8 @@ async fn approved_options_work_and_every_field_is_checked_before_mutation() {
         run(defaults.clone(), changed, false).await;
     }
     let mut expected = defaults.clone();
-    expected.filter = FilterMode::Glob(vec![
-        FilterRule::Include("a".into()),
-        FilterRule::Exclude("*".into()),
-    ]);
+    expected.filter.globs = vec!["a".into(), "!*".into()];
     let mut sent = expected.clone();
-    if let FilterMode::Glob(rules) = &mut sent.filter {
-        rules.reverse();
-    }
+    sent.filter.globs.reverse();
     run(sent, expected, false).await;
 }

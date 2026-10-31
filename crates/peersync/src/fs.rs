@@ -1,7 +1,6 @@
 use crate::{
-    Comparison, FilterMode, IssueOperation, Limits, Resource, SymlinkMode, SyncError, SyncIssue,
-    SyncOptions,
-    filter::{Filter, IgnoreFile},
+    Comparison, IssueOperation, Limits, Resource, SymlinkMode, SyncError, SyncIssue, SyncOptions,
+    filter::ripgrep::{self, SourceFilter},
     protocol::invalid,
 };
 use filetime::FileTime;
@@ -109,7 +108,7 @@ pub(crate) struct Entry {
 }
 pub(crate) struct Manifest {
     pub entries: Vec<Entry>,
-    pub ignores: Vec<IgnoreFile>,
+    pub filter: SourceFilter,
     pub issues: Vec<SyncIssue>,
     pub failed: u64,
     pub error_directories: HashSet<WirePath>,
@@ -144,30 +143,10 @@ pub(crate) fn scan(
     if !fs::metadata(root)?.is_dir() {
         return Err(invalid("source must be a directory"));
     }
-    let initial = Filter::new(&options.filter, &[])?;
-    let git = matches!(options.filter, FilterMode::GitIgnore);
-    let mut builder = ignore::WalkBuilder::new(root);
-    builder
-        .hidden(false)
-        .ignore(false)
-        .parents(false)
-        .git_ignore(git)
-        .git_global(false)
-        .git_exclude(false)
-        .require_git(false)
-        .follow_links(false)
-        .sort_by_file_path(|a, b| a.cmp(b));
-    let filter_root = root.to_owned();
-    builder.filter_entry(move |entry| {
-        entry.depth() == 0
-            || entry
-                .path()
-                .strip_prefix(&filter_root)
-                .is_ok_and(|p| initial.included(p, entry.file_type().is_some_and(|t| t.is_dir())))
-    });
+    let builder = ripgrep::builder(root, &options.filter)?;
     let mut out = Manifest {
         entries: Vec::new(),
-        ignores: Vec::new(),
+        filter: SourceFilter::new(root, &options.filter, limits)?,
         issues: Vec::new(),
         failed: 0,
         error_directories: HashSet::new(),
@@ -234,23 +213,10 @@ pub(crate) fn scan(
                 continue;
             }
         };
-        if git && info.is_dir() {
-            let ignore_path = path.join(".gitignore");
-            match fs::symlink_metadata(&ignore_path) {
-                Ok(m) if m.is_file() => {
-                    let text = read_bounded(&ignore_path, limits.max_control_frame_bytes / 4)?;
-                    let text = String::from_utf8(text)
-                        .map_err(|_| invalid("non-UTF8 .gitignore unsupported"))?;
-                    bytes += text.len();
-                    out.ignores.push(IgnoreFile {
-                        directory: WirePath::from_path(relative)?,
-                        contents: text,
-                    });
-                }
-                Ok(_) => return Err(invalid(".gitignore must be a regular file")),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
+        // Prime the source-side cache used for deletion decisions. This does
+        // not promise a snapshot against external changes to ignore files.
+        if !out.filter.included(relative, info.is_dir())? {
+            return Err(invalid("source ignore rules changed during traversal"));
         }
         let kind = if info.is_dir() {
             Kind::Directory

@@ -2198,7 +2198,6 @@ dependencies = [
  "blake3",
  "fast_rsync",
  "filetime",
- "globset",
  "ignore",
  "proptest",
  "serde",

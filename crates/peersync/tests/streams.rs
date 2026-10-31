@@ -53,7 +53,7 @@ async fn creates_updates_and_skips_with_small_stream_buffers() {
 }
 
 #[tokio::test]
-async fn default_ignores_no_hidden_files_and_delete_is_opt_in() {
+async fn default_filters_hidden_and_gitignored_files_and_delete_is_opt_in() {
     let src = tempfile::tempdir().unwrap();
     let dst = tempfile::tempdir().unwrap();
     std::fs::create_dir(src.path().join(".git")).unwrap();
@@ -64,8 +64,8 @@ async fn default_ignores_no_hidden_files_and_delete_is_opt_in() {
     let (a, b) = sync(src.path(), dst.path(), SyncOptions::default()).await;
     a.unwrap();
     b.unwrap();
-    assert!(dst.path().join(".git/config").is_file());
-    assert!(dst.path().join("hidden").exists());
+    assert!(!dst.path().join(".git/config").is_file());
+    assert!(!dst.path().join("hidden").exists());
     assert!(dst.path().join("extra").exists());
     let mut options = SyncOptions::default();
     options.delete = true;
@@ -104,7 +104,7 @@ async fn explicit_globs_prune_and_protect_excluded_files_from_delete() {
     std::fs::write(dst.path().join("old.txt"), "delete").unwrap();
     let mut options = SyncOptions::default();
     options.delete = true;
-    options.filter = FilterMode::Glob(vec![FilterRule::Exclude("target".into())]);
+    options.filter.globs = vec!["!target".into()];
     let (a, b) = sync(src.path(), dst.path(), options).await;
     a.unwrap();
     b.unwrap();
@@ -114,17 +114,17 @@ async fn explicit_globs_prune_and_protect_excluded_files_from_delete() {
 }
 
 #[tokio::test]
-async fn gitignore_without_repository_and_nested_rules_protect_receiver() {
+async fn gitignore_in_repository_and_nested_rules_protect_receiver() {
     let src = tempfile::tempdir().unwrap();
     let dst = tempfile::tempdir().unwrap();
     std::fs::write(src.path().join(".gitignore"), "*.tmp\n").unwrap();
+    std::fs::create_dir(src.path().join(".git")).unwrap();
     std::fs::create_dir(src.path().join("nested")).unwrap();
     std::fs::write(src.path().join("nested/.gitignore"), "!keep.tmp\n").unwrap();
     std::fs::write(src.path().join("nested/keep.tmp"), "keep").unwrap();
     std::fs::write(src.path().join("skip.tmp"), "skip").unwrap();
     std::fs::write(dst.path().join("extra.tmp"), "protected").unwrap();
     let mut options = SyncOptions::default();
-    options.filter = FilterMode::GitIgnore;
     options.delete = true;
     let (a, b) = sync(src.path(), dst.path(), options).await;
     a.unwrap();

@@ -2,8 +2,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, endpoint::presets};
 use peersync::{
-    CancellationToken, Comparison, FilterMode, FilterRule, SymlinkMode, SyncContext, SyncOptions,
-    SyncReport, Syncer, TransferMode,
+    CancellationToken, Comparison, SymlinkMode, SyncContext, SyncOptions, SyncReport, Syncer,
+    TransferMode,
 };
 use std::{
     io::{Read, Write},
@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-const ALPN: &[u8] = b"peersync/1";
+const ALPN: &[u8] = b"peersync/2";
 
 mod transport;
 
@@ -88,16 +88,18 @@ struct Options {
     perms: bool,
     #[arg(long)]
     links: bool,
-    /// Only root-local and nested .gitignore; never combined with explicit rules.
-    #[arg(long, conflicts_with_all = ["include", "exclude"])]
-    gitignore: bool,
-    #[arg(long, action = clap::ArgAction::Append)]
-    include: Vec<String>,
-    #[arg(long, action = clap::ArgAction::Append)]
-    exclude: Vec<String>,
+    /// Ripgrep-style glob override; prefix ! to exclude. Last match wins.
+    #[arg(short = 'g', long = "glob", action = clap::ArgAction::Append)]
+    globs: Vec<String>,
+    /// Include hidden entries unless ignored by another rule.
+    #[arg(long)]
+    hidden: bool,
+    /// Disable ignore files; explicit globs and hidden filtering still apply.
+    #[arg(long)]
+    no_ignore: bool,
 }
 impl Options {
-    fn library(&self, matches: &clap::ArgMatches) -> SyncOptions {
+    fn library(&self) -> SyncOptions {
         let mut options = SyncOptions::default();
         options.comparison = if self.checksum {
             Comparison::Checksum
@@ -118,33 +120,9 @@ impl Options {
         } else {
             SymlinkMode::Skip
         };
-        let mut rules = Vec::new();
-        // Preserve interleaving of --include and --exclude, not two grouped lists.
-        for (name, values, include) in [
-            ("include", &self.include, true),
-            ("exclude", &self.exclude, false),
-        ] {
-            if let Some(indices) = matches.indices_of(name) {
-                for (index, pattern) in indices.zip(values) {
-                    rules.push((
-                        index,
-                        if include {
-                            FilterRule::Include(pattern.clone())
-                        } else {
-                            FilterRule::Exclude(pattern.clone())
-                        },
-                    ));
-                }
-            }
-        }
-        rules.sort_by_key(|(i, _)| *i);
-        options.filter = if self.gitignore {
-            FilterMode::GitIgnore
-        } else if rules.is_empty() {
-            FilterMode::None
-        } else {
-            FilterMode::Glob(rules.into_iter().map(|(_, r)| r).collect())
-        };
+        options.filter.globs = self.globs.clone();
+        options.filter.hidden = self.hidden;
+        options.filter.no_ignore = self.no_ignore;
         options
     }
 }
@@ -267,7 +245,7 @@ fn print_report(report: &SyncReport, json: bool, error: Option<&str>) {
     }
 }
 
-async fn run(cli: Cli, matches: &clap::ArgMatches, cancel: CancellationToken) -> Result<()> {
+async fn run(cli: Cli, cancel: CancellationToken) -> Result<()> {
     if let Command::Keygen { out } = &cli.command {
         let key = SecretKey::generate();
         write_key(out, &key.to_bytes())?;
@@ -307,7 +285,7 @@ async fn run(cli: Cli, matches: &clap::ArgMatches, cancel: CancellationToken) ->
             match &cli.command { Command::Send {..}=>connection.open_bi().await, _=>connection.accept_bi().await }
         }=>stream? };
         let result=match &cli.command {
-            Command::Send {source,options,..}=>syncer.send(&mut rx,&mut tx,source,&options.library(matches.subcommand_matches("send").unwrap()),&mut context).await,
+            Command::Send {source,options,..}=>syncer.send(&mut rx,&mut tx,source,&options.library(),&mut context).await,
             Command::Receive {destination,..}=>syncer.receive(&mut rx,&mut tx,destination,None,&mut context).await,
             _=>unreachable!(),
         };
@@ -364,7 +342,7 @@ async fn main() -> std::process::ExitCode {
             timer_cancel.cancel();
         }
     });
-    let result = run(cli, &matches, cancel.clone()).await;
+    let result = run(cli, cancel.clone()).await;
     signal_task.abort();
     timer.abort();
     match result {
@@ -380,7 +358,7 @@ async fn main() -> std::process::ExitCode {
 mod tests {
     use super::*;
     #[test]
-    fn mixed_filter_modes_rejected_and_rule_order_retained() {
+    fn legacy_filter_flags_rejected_and_glob_order_retained() {
         let peer = SecretKey::generate().public().to_string();
         assert!(
             Cli::try_parse_from([
@@ -399,33 +377,13 @@ mod tests {
         );
         let matches = Cli::command()
             .try_get_matches_from([
-                "peersync",
-                "send",
-                ".",
-                "--key",
-                "key",
-                "--peer",
-                &peer,
-                "--exclude",
-                "a",
-                "--include",
-                "b",
-                "--exclude",
-                "c",
+                "peersync", "send", ".", "--key", "key", "--peer", &peer, "--glob", "!a", "-g",
+                "b", "--glob", "!c",
             ])
             .unwrap();
         let cli = Cli::from_arg_matches(&matches).unwrap();
         if let Command::Send { options, .. } = cli.command {
-            assert_eq!(
-                options
-                    .library(matches.subcommand_matches("send").unwrap())
-                    .filter,
-                FilterMode::Glob(vec![
-                    FilterRule::Exclude("a".into()),
-                    FilterRule::Include("b".into()),
-                    FilterRule::Exclude("c".into())
-                ])
-            );
+            assert_eq!(options.library().filter.globs, vec!["!a", "b", "!c"]);
         } else {
             panic!()
         }

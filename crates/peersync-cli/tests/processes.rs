@@ -170,6 +170,158 @@ fn two_real_cli_processes_sync_and_report() {
 }
 
 #[test]
+#[ignore = "requires PEERSYNC_RG pointing to ripgrep 15.2.0"]
+fn filter_selection_matches_pinned_ripgrep() {
+    use std::collections::BTreeSet;
+    fn isolated(command: &mut Command, home: &Path) {
+        for (key, _) in std::env::vars_os() {
+            let name = key.to_string_lossy();
+            if name.starts_with("GIT_") || name.starts_with("RIPGREP_") || name.starts_with("XDG_")
+            {
+                command.env_remove(key);
+            }
+        }
+        command
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", home.join(".gitconfig"));
+    }
+    fn tree(root: &Path, directory: &Path, files: &mut BTreeSet<String>) {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                tree(root, &entry.path(), files);
+            } else {
+                files.insert(
+                    entry
+                        .path()
+                        .strip_prefix(root)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .into(),
+                );
+            }
+        }
+    }
+    let rg = std::env::var_os("PEERSYNC_RG").expect("PEERSYNC_RG");
+    let version = Command::new(&rg).arg("--version").output().unwrap();
+    assert!(version.stdout.starts_with(b"ripgrep 15.2.0\n"));
+    for flags in [
+        vec![],
+        vec!["--hidden"],
+        vec!["--no-ignore"],
+        vec!["--hidden", "--no-ignore"],
+        vec!["-g", "*.rs", "-g", "!blocked.rs"],
+        vec!["-g", "!blocked.rs", "-g", "*.rs"],
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        let home = p.join("home");
+        let source = p.join("source");
+        let dest = p.join("dest");
+        for directory in [&home, &source, &dest] {
+            std::fs::create_dir(directory).unwrap();
+        }
+        for (name, content) in [
+            (".git/info/exclude", "info.tmp\n"),
+            (".gitignore", "git.tmp\n"),
+            (".ignore", "ignore.tmp\n"),
+            (".rgignore", "rg.tmp\n"),
+            ("visible.rs", "data"),
+            ("blocked.rs", "data"),
+            (".hidden.rs", "data"),
+            ("git.tmp", "data"),
+            ("ignore.tmp", "data"),
+            ("rg.tmp", "data"),
+            ("global.tmp", "data"),
+            ("info.tmp", "data"),
+            ("parent.tmp", "data"),
+            ("nested/child.rs", "data"),
+            ("line\nbreak.rs", "data"),
+        ] {
+            let file = source.join(name);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, content).unwrap();
+        }
+        std::fs::write(p.join(".ignore"), "parent.tmp\n").unwrap();
+        std::fs::write(home.join("global"), "global.tmp\n").unwrap();
+        std::fs::write(
+            home.join(".gitconfig"),
+            format!("[core]\nexcludesFile = {}\n", home.join("global").display()),
+        )
+        .unwrap();
+        let mut oracle = Command::new(&rg);
+        isolated(&mut oracle, &home);
+        let selected = oracle
+            .current_dir(&source)
+            .args(["--no-config", "--files", "--null"])
+            .args(&flags)
+            .arg(".")
+            .output()
+            .unwrap();
+        assert!(selected.status.success(), "{flags:?}");
+        let expected: BTreeSet<String> = selected
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|p| !p.is_empty())
+            .map(|p| {
+                std::str::from_utf8(p)
+                    .unwrap()
+                    .trim_start_matches("./")
+                    .into()
+            })
+            .collect();
+        let sender_id = key(&p.join("sender.key"));
+        let receiver_id = key(&p.join("receiver.key"));
+        let mut receiver = Process(
+            cli()
+                .arg("receive")
+                .arg(&dest)
+                .args(["--allow-peer", &sender_id, "--direct", "--json", "--key"])
+                .arg(p.join("receiver.key"))
+                .args(["--bind", "127.0.0.1:0"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let address = ready(&mut receiver);
+        let mut sender = cli();
+        isolated(&mut sender, &home);
+        let sender = Process(
+            sender
+                .arg("send")
+                .arg(&source)
+                .args(&flags)
+                .args(["--direct", "--key"])
+                .arg(p.join("sender.key"))
+                .args([
+                    "--peer",
+                    &receiver_id,
+                    "--addr",
+                    address["addresses"][0].as_str().unwrap(),
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        for result in [output(sender), output(receiver)] {
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        let mut actual = BTreeSet::new();
+        tree(&dest, &dest, &mut actual);
+        assert_eq!(actual, expected, "{flags:?}");
+    }
+}
+
+#[test]
 fn unauthorized_identity_cannot_mutate_destination() {
     // Check both directions of authentication: an unauthorized sender, and a
     // mismatched receiver identity despite the correct IP/port hint.
